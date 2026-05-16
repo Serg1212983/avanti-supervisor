@@ -1,0 +1,125 @@
+import os
+import logging
+from datetime import datetime
+from telegram import Update
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+import anthropic
+
+TELEGRAM_TOKEN = "8608440555:AAGBRdr8IA2iB9sLCEJFnPDBtRMeSlfkFLU"
+OWNER_CHAT_ID = 6854020655
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+SYSTEM_PROMPT = """Ти — AI Супервайзер бізнесу AVANTI Cosmetics.
+Спілкуєшся тільки з власником. Відповідай українською, коротко і по суті.
+
+БІЗНЕС: Дистрибуція косметики, Закарпаття
+ОБОРОТ: 1 млн+ грн/місяць
+МАРЖА: 18.6% → ціль 30%
+БОРГ: 400 000 грн → закрити до грудня 2026
+ОБОРОТНІ КОШТИ: 100-120 000 грн
+
+КЛІЄНТИ (22, Закарпаття):
+Немеш, ФОП Петрище, Рущак, Лендел, Білак, Костак, Козушко,
+Цибарь, Крьока, Папарига, Гоєр, Думен, Морозько, Сятиня,
+Сабов, Кричфалушій, Прислупська, Худенко, Іжакевич,
+ФОП Бісун, ФОП Холод, ФОП Копос
+
+ЗНИЖКИ (Клуб партнерів AVANTI):
+ACTIVE 20к+ : 10% / 9%
+SPECIAL 50к+: 14% / 10%
+VIP 100к+: 23% / 12%
+LIMITED 150к+: 25% / 14%
+EXCLUSIVE 200к+: 27% / 16%
+
+ПОРТФЕЛЬ (24 марки):
+Волосся: Pipik, ECOSline, EMMEPIITALIA, MASE, Tahe, Chime, Melon, Morocco Oil, PLKO, RR Line, TIPLY
+Нігті: PNB, Siller, Adora, Robyuti, ThermoSkill, HZI Skin, GetTonic
+Нові кандидати: Hypertine, R-Line, NILA
+
+СТРАТЕГІЯ:
+- Ціль: 1.5 млн потім 2 млн грн/місяць
+- Червень 2026: інтернет-магазин Wize Wase (таємно від B2B клієнтів)
+- Липень 2026: сайт AVANTI
+- Масштабування по Україні через регіональних менеджерів
+- Нові ТМ: тільки українські імпортери з ексклюзивом, маржа 30%+
+"""
+
+conversation_history = []
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+def get_claude_response(user_message: str) -> str:
+    global conversation_history
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    conversation_history.append({"role": "user", "content": user_message})
+    if len(conversation_history) > 20:
+        conversation_history = conversation_history[-20:]
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1000,
+            system=SYSTEM_PROMPT,
+            messages=conversation_history
+        )
+        assistant_message = response.content[0].text
+        conversation_history.append({"role": "assistant", "content": assistant_message})
+        return assistant_message
+    except Exception as e:
+        logger.error(f"Claude API error: {e}")
+        return f"Помилка: {str(e)}"
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        await update.message.reply_text("Доступ заборонено.")
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    response = get_claude_response(update.message.text)
+    await update.message.reply_text(response)
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    await update.message.reply_text(
+        "AVANTI Supervisor активовано!\n\n"
+        "Знаю твій бізнес повністю.\n"
+        "Питай будь-що.\n\n"
+        "/status — статус бізнесу\n"
+        "/digest — ранковий дайджест\n"
+        "/reset — очистити пам'ять"
+    )
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    response = get_claude_response("Дай короткий статус бізнесу AVANTI на сьогодні. 5-7 пунктів.")
+    await update.message.reply_text(response)
+
+async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    response = get_claude_response("Ранковий дайджест. Структура: Термінове / Важливе / На контролі")
+    await update.message.reply_text(response)
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    global conversation_history
+    conversation_history = []
+    await update.message.reply_text("Пам'ять очищена.")
+
+def main():
+    if not ANTHROPIC_KEY:
+        print("ПОМИЛКА: Встановіть ANTHROPIC_API_KEY")
+        return
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("Бот запущений!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
