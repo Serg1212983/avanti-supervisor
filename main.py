@@ -46,38 +46,19 @@ def get_claude_response(user_message):
 
 
 def get_agent1_response():
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     try:
-        headers = {
-            "Authorization": f"Bearer {OPENAI_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Ти експерт косметичного ринку України. Відповідай українською."
-                },
-                {
-                    "role": "user",
-                    "content": "Знайди 3 актуальних тренди в косметиці України зараз. Запропонуй 2-3 нові торгові марки середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor. Марки мають мати ексклюзивного імпортера в Україні."
-                }
-            ],
-            "max_tokens": 1000
-        }
-        resp = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=60
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": "Знайди 3 актуальних тренди в косметиці України зараз. Запропонуй 2-3 нові торгові марки середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor. Марки мають мати ексклюзивного імпортера в Україні який працює через дистрибюторів."
+            }]
         )
-        result = resp.json()
-        if "choices" in result:
-            return result["choices"][0]["message"]["content"]
-        else:
-            return f"OpenAI помилка: {result}"
+        return response.content[0].text
     except Exception as e:
-        return f"Помилка агента: {str(e)}"
+        return f"Помилка: {str(e)}"
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
