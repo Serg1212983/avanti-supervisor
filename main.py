@@ -118,6 +118,30 @@ def main():
     if not ANTHROPIC_KEY:
         print("ПОМИЛКА: Встановіть ANTHROPIC_API_KEY")
         return
+
+    import threading
+    import schedule
+    import time
+
+    def weekly_agent1():
+        import asyncio
+        from telegram import Bot
+        bot = Bot(token=TELEGRAM_TOKEN)
+        text = get_agent1_response()
+        message = f"🤖 Агент №1 — Щотижневий звіт\n\n{text}"
+        asyncio.run(bot.send_message(chat_id=OWNER_CHAT_ID, text=message))
+        print("Щотижневий звіт надіслано!")
+
+    def run_scheduler():
+        schedule.every().monday.at("09:00").do(weekly_agent1)
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
+
+    t = threading.Thread(target=run_scheduler, daemon=True)
+    t.start()
+    print("Планувальник запущено - звіт щопонеділка о 9:00")
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -127,7 +151,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущений!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
