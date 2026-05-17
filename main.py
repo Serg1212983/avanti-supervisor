@@ -32,10 +32,10 @@ LIMITED 150к+: 25% / 14%
 EXCLUSIVE 200к+: 27% / 16%
 
 ПОРТФЕЛЬ (24 марки):
-Волосся: Pipik, ECOSline, EMMEPIITALIA, MASE, Tahe, Chime, Melon, Morocco Oil, PLKO, RR Line, TIPLY
-Нігті: PNB, Siller, Adora, Robyuti, ThermoSkill, HZI Skin, GetTonic
-Нові кандидати: Hypertine, R-Line, NILA
-
+Нігті: PNB, Siller, Adore
+Волосся: ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill
+Обличчя/макіяж: Bourjois, Lumene, Max Factor
+Нові кандидати: Hypertine (Beauty Surf)
 СТРАТЕГІЯ:
 - Ціль: 1.5 млн потім 2 млн грн/місяць
 - Червень 2026: інтернет-магазин Wize Wase (таємно від B2B клієнтів)
