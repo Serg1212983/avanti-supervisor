@@ -107,7 +107,12 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global conversation_history
     conversation_history = []
     await update.message.reply_text("Пам'ять очищена.")
-
+async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    await update.message.reply_text("🤖 Агент №1 запущено. Зачекай 60 секунд...")
+    from agent1 import run_agent1
+    await run_agent1()
 def main():
     if not ANTHROPIC_KEY:
         print("ПОМИЛКА: Встановіть ANTHROPIC_API_KEY")
@@ -117,6 +122,7 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("agent1", cmd_agent1))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущений!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
