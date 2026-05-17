@@ -113,18 +113,22 @@ async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("🤖 Агент №1 запущено. Зачекай 60 секунд...")
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
+       import requests
+        headers = {
+            "Authorization": f"Bearer {OPENAI_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
                 {"role": "system", "content": "Ти експерт косметичного ринку України. Відповідай українською."},
-                {"role": "user", "content": "Знайди 3 актуальних тренди в косметиці України зараз. І запропонуй 2-3 торгові марки середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor. Марки мають мати ексклюзивного імпортера в Україні."}
+                {"role": "user", "content": "Знайди 3 тренди в косметиці України зараз. Запропонуй 2-3 нові ТМ середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor."}
             ],
-            max_tokens=1000
-        )
-        result = response.choices[0].message.content
-        await update.message.reply_text(f"🤖 Агент №1\n\n{result}")
+            "max_tokens": 1000
+        }
+        resp = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=60)
+        text = resp.json()["choices"][0]["message"]["content"]
+        await update.message.reply_text(f"🤖 Агент №1\n\n{text}")
     except Exception as e:
         await update.message.reply_text(f"Помилка: {str(e)}")
 def main():
