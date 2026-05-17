@@ -122,4 +122,21 @@ def main():
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    import threading
+    import schedule
+    import time
+
+    def run_agent1_weekly():
+        import asyncio
+        from agent1 import run_agent1
+        asyncio.run(run_agent1())
+
+    def scheduler_thread():
+        schedule.every().monday.at("09:00").do(run_agent1_weekly)
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
+
+    t = threading.Thread(target=scheduler_thread, daemon=True)
+    t.start()
     main()
