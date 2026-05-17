@@ -142,7 +142,11 @@ async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
             json=data,
             timeout=60
         )
-        text = resp.json()["choices"][0]["message"]["content"]
+        result_json = resp.json()
+if "choices" in result_json:
+    text = result_json["choices"][0]["message"]["content"]
+else:
+    text = f"OpenAI помилка: {result_json}"
         await update.message.reply_text(f"Агент №1\n\n{text}")
     except Exception as e:
         await update.message.reply_text(f"Помилка: {str(e)}")
