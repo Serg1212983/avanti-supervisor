@@ -111,8 +111,21 @@ async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await update.message.reply_text("🤖 Агент №1 запущено. Зачекай 60 секунд...")
-    from agent1 import run_agent1
-    await run_agent1()
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ти експерт косметичного ринку України. Відповідай українською."},
+                {"role": "user", "content": "Знайди 3 актуальних тренди в косметиці України зараз. І запропонуй 2-3 торгові марки середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor. Марки мають мати ексклюзивного імпортера в Україні."}
+            ],
+            max_tokens=1000
+        )
+        result = response.choices[0].message.content
+        await update.message.reply_text(f"🤖 Агент №1\n\n{result}")
+    except Exception as e:
+        await update.message.reply_text(f"Помилка: {str(e)}")
 def main():
     if not ANTHROPIC_KEY:
         print("ПОМИЛКА: Встановіть ANTHROPIC_API_KEY")
