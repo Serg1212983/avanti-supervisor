@@ -8,6 +8,7 @@ import anthropic
 TELEGRAM_TOKEN = "8608440555:AAGBRdr8IA2iB9sLCEJFnPDBtRMeSlfkFLU"
 OWNER_CHAT_ID = 6854020655
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 
 SYSTEM_PROMPT = """Ти — AI Супервайзер бізнесу AVANTI Cosmetics.
 Спілкуєшся тільки з власником. Відповідай українською, коротко і по суті.
