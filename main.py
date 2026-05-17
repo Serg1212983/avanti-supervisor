@@ -1,7 +1,6 @@
 import os
 import logging
 import requests
-from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 import anthropic
@@ -11,36 +10,15 @@ OWNER_CHAT_ID = 6854020655
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 
-SYSTEM_PROMPT = """Ти — AI Супервайзер бізнесу AVANTI Cosmetics. Відповідай українською, коротко і по суті.
-
-БІЗНЕС: Дистрибуція косметики, Закарпаття, ФОП Сергій
-ОБОРОТ: 1 млн+ грн/місяць, МАРЖА: 18.6% → ціль 30%
-БОРГ: 400 000 грн → закрити до грудня 2026
-ОБОРОТНІ КОШТИ: 100-120 000 грн
-
-КЛІЄНТИ (22, Закарпаття):
-Немеш, ФОП Петрище, Рущак, Лендел, Білак, Костак, Козушко,
-Цибарь, Крьока, Папарига, Гоєр, Думен, Морозько, Сятиня,
-Сабов, Кричфалушій, Прислупська, Худенко, Іжакевич,
-ФОП Бісун, ФОП Холод, ФОП Копос
-
-ЗНИЖКИ (Клуб партнерів AVANTI):
-ACTIVE 20к+: 10%/9%, SPECIAL 50к+: 14%/10%
-VIP 100к+: 23%/12%, LIMITED 150к+: 25%/14%, EXCLUSIVE 200к+: 27%/16%
-
-ПОРТФЕЛЬ (24 марки):
-Нігті: PNB, Siller, Adore
-Волосся: ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos,
-C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni,
-MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill
-Обличчя: Bourjois, Lumene, Max Factor
-Нові кандидати: Hypertine (Beauty Surf)
-
-СТРАТЕГІЯ:
-- Ціль: 1.5 млн потім 2 млн грн/місяць
-- Червень 2026: інтернет-магазин Wize Wase (таємно від B2B клієнтів)
-- Нові ТМ: тільки українські імпортери з ексклюзивом, маржа 30%+
-- Масштабування по Україні через регіональних менеджерів"""
+SYSTEM_PROMPT = """Ти AI Супервайзер AVANTI Cosmetics. Відповідай українською коротко.
+Власник: Сергій, ФОП, Закарпаття.
+Оборот: 1млн+ грн/міс. Маржа: 18.6% ціль 30%.
+Борг: 400000 грн до грудня 2026.
+Клієнти 22: Немеш, ФОП Петрище, Рущак, Лендел, Білак, Костак, Козушко, Цибарь, Крьока, Папарига, Гоєр, Думен, Морозько, Сятиня, Сабов, Кричфалушій, Прислупська, Худенко, Іжакевич, ФОП Бісун, ФОП Холод, ФОП Копос.
+Знижки: ACTIVE 20к 10/9%, SPECIAL 50к 14/10%, VIP 100к 23/12%, LIMITED 150к 25/14%, EXCLUSIVE 200к 27/16%.
+Портфель 24 марки: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor.
+Нові кандидати: Hypertine Beauty Surf.
+Стратегія: ціль 1.5млн потім 2млн грн/міс. Червень 2026 магазин Wize Wase таємно. Нові ТМ тільки ексклюзивні імпортери маржа 30 плюс."""
 
 conversation_history = []
 logging.basicConfig(level=logging.INFO)
@@ -67,6 +45,41 @@ def get_claude_response(user_message):
         return f"Помилка Claude: {str(e)}"
 
 
+def get_agent1_response():
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENAI_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Ти експерт косметичного ринку України. Відповідай українською."
+                },
+                {
+                    "role": "user",
+                    "content": "Знайди 3 актуальних тренди в косметиці України зараз. Запропонуй 2-3 нові торгові марки середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor. Марки мають мати ексклюзивного імпортера в Україні."
+                }
+            ],
+            "max_tokens": 1000
+        }
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=60
+        )
+        result = resp.json()
+        if "choices" in result:
+            return result["choices"][0]["message"]["content"]
+        else:
+            return f"OpenAI помилка: {result}"
+    except Exception as e:
+        return f"Помилка агента: {str(e)}"
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         await update.message.reply_text("Доступ заборонено.")
@@ -81,10 +94,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "AVANTI Supervisor активовано!\n\n"
-        "Знаю твій бізнес повністю.\n\n"
         "/status — статус бізнесу\n"
         "/digest — ранковий дайджест\n"
-        "/agent1 — запустити агента пошуку ТМ\n"
+        "/agent1 — пошук нових ТМ і тренди\n"
         "/reset — очистити память"
     )
 
@@ -101,7 +113,7 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    response = get_claude_response("Ранковий дайджест. Структура: Термінове / Важливе / На контролі")
+    response = get_claude_response("Ранковий дайджест. Термінове / Важливе / На контролі")
     await update.message.reply_text(response)
 
 
@@ -117,39 +129,8 @@ async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await update.message.reply_text("Агент №1 запущено. Зачекай 60 секунд...")
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENAI_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Ти експерт косметичного ринку України. Відповідай українською."
-                },
-                {
-                    "role": "user",
-                    "content": "Знайди 3 тренди в косметиці України зараз. Запропонуй 2-3 нові торгові марки середнього+ сегменту яких немає в списку: PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor. Марки мають мати ексклюзивного імпортера в Україні який працює через дистрибюторів."
-                }
-            ],
-            "max_tokens": 1000
-        }
-        resp = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=60
-        )
-        result_json = resp.json()
-if "choices" in result_json:
-            text = result_json["choices"][0]["message"]["content"]
-        else:
-            text = f"OpenAI помилка: {result_json}"
-        await update.message.reply_text(f"Агент №1\n\n{text}")
-    except Exception as e:
-        await update.message.reply_text(f"Помилка: {str(e)}")
+    text = get_agent1_response()
+    await update.message.reply_text(f"Агент №1\n\n{text}")
 
 
 def main():
