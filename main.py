@@ -502,7 +502,7 @@ def main():
     jq = app.job_queue
     jq.run_daily(auto_digest, time=datetime.strptime("05:30", "%H:%M").time())
     jq.run_daily(auto_sport,  time=datetime.strptime("09:00", "%H:%M").time())
-    jq.run_daily(auto_food,   time=datetime.strptime("09:45", "%H:%M").time())
+    jq.run_daily(auto_food,   time=datetime.strptime("10:00", "%H:%M").time())
     jq.run_daily(auto_trends, time=datetime.strptime("06:00", "%H:%M").time(), days=(1,))
     jq.run_monthly(auto_brands, when=datetime.strptime("06:00", "%H:%M").time(), day=1)
 
