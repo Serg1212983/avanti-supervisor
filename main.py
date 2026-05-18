@@ -1,8 +1,10 @@
 import os
 import logging
 import requests
-import json
-import asyncio
+import threading
+import time
+import re
+import sqlite3
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
@@ -12,9 +14,10 @@ TELEGRAM_TOKEN = "8608440555:AAGBRdr8IA2iB9sLCEJFnPDBtRMeSlfkFLU"
 OWNER_CHAT_ID = 6854020655
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+DB_PATH = "/app/avanti.db"
 
 SYSTEM_PROMPT = """Ти — AI Супервайзер і особистий асистент Сергія. Власник бізнесу AVANTI Cosmetics.
-Відповідай українською мовою. Коротко і по суті. Без зайвих слів.
+Відповідай українською мовою. Коротко і по суті.
 
 БІЗНЕС: Дистрибуція косметики, Закарпаття, ФОП Сергій
 ОБОРОТ: 1 млн+ грн/місяць. МАРЖА: 18.6% ціль 30%.
@@ -27,9 +30,7 @@ SYSTEM_PROMPT = """Ти — AI Супервайзер і особистий ас
 Сабов, Кричфалушій, Прислупська, Худенко, Іжакевич,
 ФОП Бісун, ФОП Холод, ФОП Копос
 
-ЗНИЖКИ (Клуб партнерів AVANTI):
-ACTIVE 20к+: 10/9%, SPECIAL 50к+: 14/10%
-VIP 100к+: 23/12%, LIMITED 150к+: 25/14%, EXCLUSIVE 200к+: 27/16%
+ЗНИЖКИ: ACTIVE 20к+ 10/9%, SPECIAL 50к+ 14/10%, VIP 100к+ 23/12%, LIMITED 150к+ 25/14%, EXCLUSIVE 200к+ 27/16%
 
 ПОРТФЕЛЬ (24 марки):
 Нігті: PNB, Siller, Adore
@@ -39,35 +40,123 @@ MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill
 Обличчя: Bourjois, Lumene, Max Factor
 Кандидати: Hypertine Beauty Surf
 
-СТРАТЕГІЯ:
-- Ціль: 1.5 млн → 2 млн грн/місяць
-- Червень 2026: інтернет-магазин Wize Wase (таємно від B2B клієнтів)
-- Нові ТМ: ексклюзивні імпортери, маржа 30%+, середній+ сегмент
-- Масштабування по Україні
+СТРАТЕГІЯ: Ціль 1.5 млн → 2 млн грн/місяць. Червень 2026 Wize Wase B2C.
+РОЗПОРЯДОК: 12:00 спорт, 12:45 їжа. Сергій не виходить з дому.
 
-ОСОБИСТИЙ РОЗПОРЯДОК СЕРГІЯ:
-- 12:00 — спорт (30-40 хвилин)
-- 12:45 — їжа
-- Решта часу — робота вдома (не виходить через судовий процес)
-
-ФУНКЦІЇ АСИСТЕНТА:
-Якщо Сергій просить нагадати щось — запиши і скажи що запам'ятав.
-Якщо питає про план на день/тиждень — відповідай з урахуванням розпорядку.
-Якщо просить скласти графік — допоможи структурувати задачі по часу.
-Якщо питання про бізнес — думай в категоріях кас, маржі, клієнтів.
-Завжди будь проактивним — якщо бачиш важливе питання яке варто вирішити, запропонуй сам."""
+ВАЖЛИВО ПРО НАГАДУВАННЯ:
+Якщо Сергій каже "нагадай", "нагадати", "нагади" з часом — система автоматично збереже нагадування.
+ЗАВЖДИ відповідай: "✅ Записав нагадування: [задача] о [час]"
+НІКОЛИ не кажи що не можеш надіслати нагадування — система це робить автоматично."""
 
 conversation_history = []
-reminders = []
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def kyiv_time():
+    return datetime.utcnow() + timedelta(hours=3)
+
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT NOT NULL,
+        remind_time TEXT NOT NULL,
+        remind_date TEXT NOT NULL,
+        done INTEGER DEFAULT 0,
+        created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT NOT NULL,
+        done INTEGER DEFAULT 0,
+        created_at TEXT,
+        due_date TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+
+def db_add_reminder(text, rtime, rdate):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO reminders (text, remind_time, remind_date, created_at) VALUES (?,?,?,?)",
+              (text, rtime, rdate, kyiv_time().strftime("%d.%m %H:%M")))
+    conn.commit()
+    conn.close()
+
+
+def db_get_active_reminders():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, text, remind_time, remind_date FROM reminders WHERE done=0 ORDER BY remind_date, remind_time")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def db_mark_done(rid):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE reminders SET done=1 WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+
+
+def db_add_task(text, due_date=None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO tasks (text, created_at, due_date) VALUES (?,?,?)",
+              (text, kyiv_time().strftime("%d.%m %H:%M"), due_date))
+    conn.commit()
+    conn.close()
+
+
+def db_get_tasks():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, text, due_date FROM tasks WHERE done=0 ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def db_done_task(tid):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE tasks SET done=1 WHERE id=?", (tid,))
+    conn.commit()
+    conn.close()
+
+
+def parse_time(text):
+    patterns = [
+        r'о\s*(\d{1,2})[:\.](\d{2})',
+        r'(\d{1,2})[:\.](\d{2})',
+        r'о\s*(\d{1,2})\s*год',
+        r'\b(\d{1,2}):(\d{2})\b',
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            g = m.groups()
+            h = int(g[0])
+            mn = int(g[1]) if len(g) > 1 and g[1] else 0
+            if 0 <= h <= 23 and 0 <= mn <= 59:
+                return h, mn
+    return None, None
 
 
 def get_claude_response(user_message):
     global conversation_history
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    conversation_history.append({"role": "user", "content": user_message})
+    now = kyiv_time()
+    conversation_history.append({
+        "role": "user",
+        "content": f"[Київ {now.strftime('%H:%M %d.%m.%Y')}] {user_message}"
+    })
     if len(conversation_history) > 30:
         conversation_history = conversation_history[-30:]
     try:
@@ -77,135 +166,169 @@ def get_claude_response(user_message):
             system=SYSTEM_PROMPT,
             messages=conversation_history
         )
-        assistant_message = response.content[0].text
-        conversation_history.append({"role": "assistant", "content": assistant_message})
-        return assistant_message
+        reply = response.content[0].text
+        conversation_history.append({"role": "assistant", "content": reply})
+        return reply
     except Exception as e:
-        return f"Помилка Claude: {str(e)}"
+        return f"Помилка: {str(e)}"
 
 
 def transcribe_voice(file_path):
-    """Перетворює голосове повідомлення в текст через OpenAI Whisper"""
     try:
-        with open(file_path, 'rb') as audio_file:
-            headers = {"Authorization": f"Bearer {OPENAI_KEY}"}
-            files = {"file": ("voice.ogg", audio_file, "audio/ogg")}
-            data = {"model": "whisper-1", "language": "uk"}
+        with open(file_path, 'rb') as f:
             resp = requests.post(
                 "https://api.openai.com/v1/audio/transcriptions",
-                headers=headers,
-                files=files,
-                data=data,
+                headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                files={"file": ("voice.ogg", f, "audio/ogg")},
+                data={"model": "whisper-1", "language": "uk"},
                 timeout=30
             )
-            result = resp.json()
-            if "text" in result:
-                return result["text"]
-            else:
-                return None
+            return resp.json().get("text")
     except Exception as e:
-        logger.error(f"Whisper error: {e}")
+        logger.error(f"Whisper: {e}")
         return None
 
 
 def get_agent1_response():
-    """Агент №1 - тренди та нові ТМ"""
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     try:
-        response = client.messages.create(
+        r = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1200,
-            messages=[{
-                "role": "user",
-                "content": """Ти аналітик косметичного ринку України.
+            messages=[{"role": "user", "content": """Ти аналітик косметичного ринку України.
 
-Дай мені:
+🔥 ТРЕНДИ ТИЖНЯ (3 пункти) — що популярно в косметиці UA+світ.
 
-🔥 ТРЕНДИ ТИЖНЯ (3 пункти)
-Що зараз популярно в косметиці в Україні та світі (манікюр, волосся, обличчя).
-Звідки йде тренд (Корея, Захід, тощо) і чому це важливо для дистриб'ютора.
-
-🏆 НОВІ ТМ — КАНДИДАТИ (3-4 марки)
-Торгові марки яких НЕМАЄ в цьому списку:
+🏆 НОВІ ТМ КАНДИДАТИ (3-4 марки) — яких НЕМАЄ в списку:
 PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni, MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill, Bourjois, Lumene, Max Factor.
+Критерії: середній+ сегмент, ексклюзивний імпортер в Україні, маржа 30%+.
 
-Критерії відбору:
-- Середній або вище середнього ціновий сегмент
-- Є ексклюзивний імпортер в Україні який працює через дистриб'юторів
-- Потенційна маржинальність 30%+
-- Схожі за рівнем на: R-Line, ECHOSline, Meloni
-
-Для кожної ТМ: назва, категорія, чому підходить, де шукати контакт імпортера.
-
-💡 РЕКОМЕНДАЦІЯ
-Що зробити цього місяця щоб наблизитись до обороту 1.5 млн грн/міс.
-
-Відповідай українською мовою."""
-            }]
+💡 РЕКОМЕНДАЦІЯ для 1.5 млн грн/міс.
+Українською."""}]
         )
-        return response.content[0].text
+        return r.content[0].text
     except Exception as e:
-        return f"Помилка агента: {str(e)}"
+        return f"Помилка: {str(e)}"
+
+
+def process_reminder(text):
+    """Перевіряє чи є в тексті нагадування і зберігає в БД"""
+    kws = ["нагадай", "нагадати", "нагади", "нагадування"]
+    if not any(k in text.lower() for k in kws):
+        return False, None, None
+
+    h, mn = parse_time(text)
+    if h is None:
+        return False, None, None
+
+    now = kyiv_time()
+    rt = f"{h:02d}:{mn:02d}"
+    rd = now.strftime("%d.%m")
+    label = "сьогодні"
+
+    if h < now.hour or (h == now.hour and mn <= now.minute):
+        rd = (now + timedelta(days=1)).strftime("%d.%m")
+        label = "завтра"
+
+    db_add_reminder(text, rt, rd)
+    return True, rt, label
+
+
+def reminder_checker():
+    """Перевіряє нагадування кожну хвилину"""
+    while True:
+        try:
+            now = kyiv_time()
+            ct = f"{now.hour:02d}:{now.minute:02d}"
+            cd = now.strftime("%d.%m")
+            rows = db_get_active_reminders()
+            for rid, rtext, rtime, rdate in rows:
+                if rtime == ct and rdate == cd:
+                    db_mark_done(rid)
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": OWNER_CHAT_ID,
+                            "text": f"🔔 НАГАДУВАННЯ!\n\n📝 {rtext}\n⏰ {rtime}"
+                        },
+                        timeout=10
+                    )
+                    logger.info(f"Reminder sent: {rtext} at {rtime}")
+        except Exception as e:
+            logger.error(f"Reminder checker: {e}")
+        time.sleep(60)
+
+
+async def process_text(text, update, context):
+    """Обробляє текст — і голосовий і текстовий"""
+    # Перевіряємо нагадування
+    is_reminder, rt, label = process_reminder(text)
+    if is_reminder:
+        await update.message.reply_text(f"✅ Нагадування записано!\n⏰ {label} о {rt}\n📝 {text}")
+        return
+
+    # Перевіряємо задачі
+    task_kws = ["задача:", "завдання:", "зробити:", "todo:"]
+    if any(k in text.lower() for k in task_kws):
+        db_add_task(text)
+        await update.message.reply_text(f"✅ Задачу записано:\n📋 {text}")
+        return
+
+    # Звичайна відповідь
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    response = get_claude_response(text)
+    await update.message.reply_text(response)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    response = get_claude_response(update.message.text)
-    await update.message.reply_text(response)
+    await process_text(update.message.text, update, context)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробка голосових повідомлень"""
     if update.effective_user.id != OWNER_CHAT_ID:
         return
-
-    await update.message.reply_text("🎤 Слухаю... розпізнаю голос")
-
+    await update.message.reply_text("🎤 Розпізнаю...")
     try:
-        voice = update.message.voice
-        file = await context.bot.get_file(voice.file_id)
-        file_path = f"/tmp/voice_{voice.file_id}.ogg"
-        await file.download_to_drive(file_path)
-
+        file = await context.bot.get_file(update.message.voice.file_id)
+        path = f"/tmp/v_{update.message.voice.file_id}.ogg"
+        await file.download_to_drive(path)
         if not OPENAI_KEY:
-            await update.message.reply_text("❌ OpenAI ключ не налаштований для голосу")
+            await update.message.reply_text("❌ OPENAI_API_KEY не налаштований")
             return
-
-        text = transcribe_voice(file_path)
-
-        if text:
-            await update.message.reply_text(f"🎤 Розпізнано: _{text}_", parse_mode="Markdown")
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-            response = get_claude_response(text)
-            await update.message.reply_text(response)
-        else:
-            await update.message.reply_text("❌ Не вдалось розпізнати голос. Спробуй ще раз або напиши текстом.")
-
+        text = transcribe_voice(path)
         try:
-            os.remove(file_path)
+            os.remove(path)
         except:
             pass
-
+        if text:
+            await update.message.reply_text(f"🎤 _{text}_", parse_mode="Markdown")
+            await process_text(text, update, context)
+        else:
+            await update.message.reply_text("❌ Не вдалось розпізнати. Спробуй ще раз.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Помилка обробки голосу: {str(e)}")
+        await update.message.reply_text(f"❌ {str(e)}")
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
+    now = kyiv_time()
     await update.message.reply_text(
-        "AVANTI Supervisor активовано! 🚀\n\n"
-        "Я твій бізнес-супервайзер і особистий асистент.\n\n"
-        "🎤 Можеш надсилати голосові повідомлення!\n\n"
-        "Команди:\n"
-        "/status — статус бізнесу\n"
-        "/digest — ранковий дайджест\n"
-        "/plan — план на сьогодні\n"
-        "/agent1 — запустити аналітика\n"
-        "/remind — додати нагадування\n"
-        "/reset — очистити пам'ять"
+        f"AVANTI Supervisor 🚀\n"
+        f"Зараз: {now.strftime('%H:%M %d.%m.%Y')} Київ\n\n"
+        f"🎤 Говори голосом!\n"
+        f"🔔 'Нагадай о 15:00 зателефонувати' — збережу і нагадаю точно\n"
+        f"📋 'Задача: зробити щось' — запишу в список\n\n"
+        f"Авто щодня:\n"
+        f"• 8:30 — ранковий дайджест\n"
+        f"• 12:00 — нагадування спорт\n"
+        f"• 12:45 — нагадування їжа\n\n"
+        f"Авто тижневе:\n"
+        f"• Пн 9:00 — тренди косметики\n"
+        f"• 1-го числа — нові ТМ кандидати\n\n"
+        f"Команди: /status /digest /plan /reminders /tasks /agent1"
     )
 
 
@@ -213,35 +336,75 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    response = get_claude_response("Дай короткий статус бізнесу AVANTI на сьогодні. 5-7 пунктів максимум.")
-    await update.message.reply_text(response)
+    await update.message.reply_text(get_claude_response("Статус бізнесу AVANTI сьогодні. 5-7 пунктів."))
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    now = datetime.now()
-    response = get_claude_response(
-        f"Ранковий дайджест на {now.strftime('%d.%m.%Y')}. "
-        f"Структура: 🔴 Термінове | 🟡 Важливе | 🟢 На контролі. "
-        f"Врахуй розпорядок дня: 12:00 спорт, 12:45 їжа."
-    )
-    await update.message.reply_text(f"🌅 Дайджест {now.strftime('%d.%m')}\n\n{response}")
+    now = kyiv_time()
+    r = get_claude_response("Ранковий дайджест. 🔴 Термінове | 🟡 Важливе | 🟢 На контролі")
+    await update.message.reply_text(f"🌅 {now.strftime('%d.%m')}\n\n{r}")
 
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    now = datetime.now()
-    response = get_claude_response(
-        f"Склади план на сьогодні {now.strftime('%A %d.%m.%Y')}. "
-        f"Враховуй: 12:00 спорт, 12:45 їжа. "
-        f"Розстав задачі по часових блоках: ранок, до спорту, після їжі, вечір. "
-        f"Питай що є пріоритетним якщо не знаєш."
-    )
-    await update.message.reply_text(f"📅 План на сьогодні\n\n{response}")
+    now = kyiv_time()
+    rems = db_get_active_reminders()
+    tasks = db_get_tasks()
+    context_text = ""
+    if rems:
+        context_text += "\nНагадування: " + ", ".join([f"{r[2]} — {r[1][:40]}" for r in rems])
+    if tasks:
+        context_text += "\nЗадачі: " + ", ".join([t[1][:40] for t in tasks[:5]])
+    r = get_claude_response(f"План на сьогодні по часових блоках. 12:00 спорт, 12:45 їжа.{context_text}")
+    await update.message.reply_text(f"📅 {now.strftime('%d.%m')}\n\n{r}")
+
+
+async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    rows = db_get_active_reminders()
+    if not rows:
+        await update.message.reply_text("📋 Немає активних нагадувань")
+        return
+    text = f"🔔 Нагадувань: {len(rows)}\n\n"
+    for rid, rtext, rtime, rdate in rows:
+        text += f"⏰ {rtime} ({rdate})\n📝 {rtext[:60]}\n\n"
+    await update.message.reply_text(text)
+
+
+async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    rows = db_get_tasks()
+    if not rows:
+        await update.message.reply_text("📋 Немає активних задач\n\nДодай: 'Задача: зробити щось'")
+        return
+    text = f"📋 Задач: {len(rows)}\n\n"
+    for tid, ttext, tdue in rows:
+        due = f" ({tdue})" if tdue else ""
+        text += f"• [{tid}] {ttext[:60]}{due}\n"
+    text += "\nЩоб закрити задачу: /done [номер]"
+    await update.message.reply_text(text)
+
+
+async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Вкажи номер: /done 1")
+        return
+    try:
+        tid = int(args[0])
+        db_done_task(tid)
+        await update.message.reply_text(f"✅ Задача #{tid} виконана!")
+    except:
+        await update.message.reply_text("Невірний номер")
 
 
 async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,43 +412,22 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Напиши що нагадати, наприклад:\n"
-            "/remind зателефонувати в PUMB о 15:00\n"
-            "/remind зустріч з постачальником в п'ятницю о 11:00"
-        )
+        await update.message.reply_text("Приклад: /remind о 15:00 зателефонувати Рущаку")
         return
-    reminder_text = " ".join(args)
-    reminders.append({
-        "text": reminder_text,
-        "created": datetime.now().strftime("%d.%m %H:%M")
-    })
-    await update.message.reply_text(
-        f"✅ Записав нагадування:\n_{reminder_text}_\n\n"
-        f"Всього нагадувань: {len(reminders)}",
-        parse_mode="Markdown"
-    )
-
-
-async def cmd_reminders_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_CHAT_ID:
-        return
-    if not reminders:
-        await update.message.reply_text("📋 Немає активних нагадувань")
-        return
-    text = "📋 Активні нагадування:\n\n"
-    for i, r in enumerate(reminders, 1):
-        text += f"{i}. {r['text']}\n   _(додано {r['created']})_\n\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    text = " ".join(args)
+    is_reminder, rt, label = process_reminder("нагадай " + text)
+    if is_reminder:
+        await update.message.reply_text(f"✅ {label} о {rt}\n📝 {text}")
+    else:
+        await update.message.reply_text("Не знайшов час. Вкажи наприклад: о 15:00")
 
 
 async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
-    await update.message.reply_text("🔍 Агент №1 запущено. Аналізую ринок... зачекай 60 секунд")
-    text = get_agent1_response()
-    now = datetime.now()
-    await update.message.reply_text(f"🤖 Агент №1 — {now.strftime('%d.%m.%Y')}\n\n{text}")
+    await update.message.reply_text("🔍 Аналізую... зачекай 60 секунд")
+    now = kyiv_time()
+    await update.message.reply_text(f"🤖 Агент №1 — {now.strftime('%d.%m.%Y')}\n\n{get_agent1_response()}")
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -296,126 +438,76 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Пам'ять очищена.")
 
 
-async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
-    """Автоматичний ранковий дайджест о 8:30 Київ (5:30 UTC)"""
-    now = datetime.now()
-    response = get_claude_response(
-        f"Ранковий автодайджест {now.strftime('%d.%m.%Y')}. "
-        f"Коротко — що сьогодні критично для AVANTI? "
-        f"Структура: 🔴 Термінове | 🟡 Важливе | 🟢 На контролі. "
-        f"Нагадай про 12:00 спорт і 12:45 їжа. Максимум 150 слів."
-    )
-    await context.bot.send_message(
-        chat_id=OWNER_CHAT_ID,
-        text=f"🌅 Доброго ранку! Дайджест {now.strftime('%d.%m')}\n\n{response}"
-    )
+async def auto_digest(context: ContextTypes.DEFAULT_TYPE):
+    now = kyiv_time()
+    rems = db_get_active_reminders()
+    rn = f"\n🔔 Нагадувань сьогодні: {len(rems)}" if rems else ""
+    r = get_claude_response("Ранковий дайджест. 🔴 Термінове | 🟡 Важливе | 🟢 На контролі. Максимум 150 слів.")
+    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🌅 Доброго ранку! {now.strftime('%d.%m')}{rn}\n\n{r}")
 
 
-async def send_sport_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Нагадування о 12:00 — спорт"""
-    await context.bot.send_message(
-        chat_id=OWNER_CHAT_ID,
-        text="💪 12:00 — Час спорту!\n\nВідклади роботу на 30-40 хвилин. Здоров'я важливіше."
-    )
+async def auto_sport(context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text="💪 12:00 — Час спорту! 30-40 хвилин.")
 
 
-async def send_food_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Нагадування о 12:45 — їжа"""
-    await context.bot.send_message(
-        chat_id=OWNER_CHAT_ID,
-        text="🍽️ 12:45 — Час їжі!\n\nПообідай спокійно перед тим як повертатись до роботи."
-    )
+async def auto_food(context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text="🍽️ 12:45 — Час їжі!")
 
 
-async def send_weekly_trends(context: ContextTypes.DEFAULT_TYPE):
-    """Щопонеділка о 9:00 Київ (6:00 UTC) — тренди тижня"""
-    now = datetime.now()
+async def auto_trends(context: ContextTypes.DEFAULT_TYPE):
+    now = kyiv_time()
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=800,
-            messages=[{
-                "role": "user",
-                "content": "Дай мені топ-3 тренди в косметиці (манікюр, волосся, обличчя) які зараз актуальні в Україні та світі. Для кожного: назва тренду, звідки прийшов, чому важливо знати дистриб'ютору. Відповідай українською, коротко."
-            }]
+        r = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=700,
+            messages=[{"role": "user", "content": "Топ-3 тренди в косметиці України зараз (манікюр/волосся/обличчя). Для кожного: назва, звідки, чому важливо дистриб'ютору. Українською, коротко."}]
         )
-        text = response.content[0].text
-        await context.bot.send_message(
-            chat_id=OWNER_CHAT_ID,
-            text=f"🔍 Тренди тижня — {now.strftime('%d.%m.%Y')}\n\n{text}"
-        )
+        await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🔍 Тренди — {now.strftime('%d.%m')}\n\n{r.content[0].text}")
     except Exception as e:
-        logger.error(f"Weekly trends error: {e}")
+        logger.error(f"Trends: {e}")
 
 
-async def send_monthly_brands(context: ContextTypes.DEFAULT_TYPE):
-    """1-го числа кожного місяця о 9:00 — нові ТМ"""
-    now = datetime.now()
-    text = get_agent1_response()
-    await context.bot.send_message(
-        chat_id=OWNER_CHAT_ID,
-        text=f"🏆 Нові ТМ — шортліст {now.strftime('%B %Y')}\n\n{text}"
-    )
+async def auto_brands(context: ContextTypes.DEFAULT_TYPE):
+    now = kyiv_time()
+    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🏆 Нові ТМ — {now.strftime('%B %Y')}\n\n{get_agent1_response()}")
 
 
 def main():
     if not ANTHROPIC_KEY:
-        print("ПОМИЛКА: Встановіть ANTHROPIC_API_KEY")
+        print("ПОМИЛКА: ANTHROPIC_API_KEY")
         return
+
+    init_db()
+    print("✅ База даних ініціалізована")
+
+    t = threading.Thread(target=reminder_checker, daemon=True)
+    t.start()
+    print("✅ Нагадування активні (перевірка щохвилини)")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Команди
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("remind", cmd_remind))
-    app.add_handler(CommandHandler("reminders", cmd_reminders_list))
+    app.add_handler(CommandHandler("reminders", cmd_reminders))
+    app.add_handler(CommandHandler("tasks", cmd_tasks))
+    app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("agent1", cmd_agent1))
     app.add_handler(CommandHandler("reset", cmd_reset))
-
-    # Голосові повідомлення
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-
-    # Текстові повідомлення
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Автоматичні розсилки
-    job_queue = app.job_queue
+    jq = app.job_queue
+    jq.run_daily(auto_digest, time=datetime.strptime("05:30", "%H:%M").time())
+    jq.run_daily(auto_sport,  time=datetime.strptime("09:00", "%H:%M").time())
+    jq.run_daily(auto_food,   time=datetime.strptime("09:45", "%H:%M").time())
+    jq.run_daily(auto_trends, time=datetime.strptime("06:00", "%H:%M").time(), days=(1,))
+    jq.run_monthly(auto_brands, when=datetime.strptime("06:00", "%H:%M").time(), day=1)
 
-    # Ранковий дайджест о 8:30 Київ = 5:30 UTC
-    job_queue.run_daily(send_morning_digest, time=datetime.strptime("05:30", "%H:%M").time())
-
-    # Нагадування спорт о 12:00 Київ = 9:00 UTC
-    job_queue.run_daily(send_sport_reminder, time=datetime.strptime("09:00", "%H:%M").time())
-
-    # Нагадування їжа о 12:45 Київ = 9:45 UTC
-    job_queue.run_daily(send_food_reminder, time=datetime.strptime("09:45", "%H:%M").time())
-
-    # Тренди щопонеділка о 9:00 Київ = 6:00 UTC
-    job_queue.run_daily(
-        send_weekly_trends,
-        time=datetime.strptime("06:00", "%H:%M").time(),
-        days=(1,)  # 1 = понеділок
-    )
-
-    # Нові ТМ 1-го числа кожного місяця о 9:00 Київ = 6:00 UTC
-    job_queue.run_monthly(
-        send_monthly_brands,
-        when=datetime.strptime("06:00", "%H:%M").time(),
-        day=1
-    )
-
-    print("AVANTI Supervisor запущений!")
-    print("Голосові повідомлення: ✅")
-    print("Ранковий дайджест: 8:30 Київ")
-    print("Спорт нагадування: 12:00 Київ")
-    print("Їжа нагадування: 12:45 Київ")
-    print("Тренди: щопонеділка 9:00 Київ")
-    print("Нові ТМ: 1-го числа кожного місяця 9:00 Київ")
-
+    print("🚀 AVANTI Supervisor запущений!")
+    print("📊 БД: нагадування і задачі зберігаються постійно")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
