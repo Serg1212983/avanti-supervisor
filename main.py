@@ -205,9 +205,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         if text:
             await update.message.reply_text(f"🎤 _{text}_", parse_mode="Markdown")
-          await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-response = get_claude_response(text)
-await update.message.reply_text(response)
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            response = get_claude_response(text)                                                      
+            await update.message.reply_text(response)
         else:
             await update.message.reply_text("❌ Не вдалось розпізнати. Спробуй ще раз.")
     except Exception as e:
