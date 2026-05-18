@@ -133,7 +133,7 @@ def main():
         print("Щотижневий звіт надіслано!")
 
     def run_scheduler():
-        schedule.every().monday.at("09:00").do(weekly_agent1)
+        schedule.every().monday.at("06:00").do(weekly_agent1)
         while True:
             schedule.run_pending()
             time.sleep(60)
