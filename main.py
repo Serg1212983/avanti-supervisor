@@ -440,10 +440,28 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def auto_digest(context: ContextTypes.DEFAULT_TYPE):
     now = kyiv_time()
+    yesterday = (now - timedelta(days=1)).strftime("%d.%m")
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, text, remind_time FROM reminders WHERE done=0 AND remind_date=?", (yesterday,))
+    old = c.fetchall()
+    today = now.strftime("%d.%m")
+    transferred = []
+    for rid, rtext, rtime in old:
+        c.execute("UPDATE reminders SET remind_date=? WHERE id=?", (today, rid))
+        transferred.append(f"⏰ {rtime} — {rtext[:50]}")
+    conn.commit()
+    conn.close()
     rems = db_get_active_reminders()
     rn = f"\n🔔 Нагадувань сьогодні: {len(rems)}" if rems else ""
+    tr_text = ""
+    if transferred:
+        tr_text = "\n\n⚠️ Перенесено з вчора:\n" + "\n".join(transferred)
     r = get_claude_response("Ранковий дайджест. 🔴 Термінове | 🟡 Важливе | 🟢 На контролі. Максимум 150 слів.")
-    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🌅 Доброго ранку! {now.strftime('%d.%m')}{rn}\n\n{r}")
+    await context.bot.send_message(
+        chat_id=OWNER_CHAT_ID,
+        text=f"🌅 Доброго ранку! {now.strftime('%d.%m')}{rn}{tr_text}\n\n{r}"
+    )
 
 
 async def auto_sport(context: ContextTypes.DEFAULT_TYPE):
