@@ -440,28 +440,10 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def auto_digest(context: ContextTypes.DEFAULT_TYPE):
     now = kyiv_time()
-    yesterday = (now - timedelta(days=1)).strftime("%d.%m")
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, text, remind_time FROM reminders WHERE done=0 AND remind_date=?", (yesterday,))
-    old = c.fetchall()
-    today = now.strftime("%d.%m")
-    transferred = []
-    for rid, rtext, rtime in old:
-        c.execute("UPDATE reminders SET remind_date=? WHERE id=?", (today, rid))
-        transferred.append(f"⏰ {rtime} — {rtext[:50]}")
-    conn.commit()
-    conn.close()
     rems = db_get_active_reminders()
     rn = f"\n🔔 Нагадувань сьогодні: {len(rems)}" if rems else ""
-    tr_text = ""
-    if transferred:
-        tr_text = "\n\n⚠️ Перенесено з вчора:\n" + "\n".join(transferred)
     r = get_claude_response("Ранковий дайджест. 🔴 Термінове | 🟡 Важливе | 🟢 На контролі. Максимум 150 слів.")
-    await context.bot.send_message(
-        chat_id=OWNER_CHAT_ID,
-        text=f"🌅 Доброго ранку! {now.strftime('%d.%m')}{rn}{tr_text}\n\n{r}"
-    )
+    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🌅 Доброго ранку! {now.strftime('%d.%m')}{rn}\n\n{r}")
 
 
 async def auto_sport(context: ContextTypes.DEFAULT_TYPE):
@@ -490,6 +472,173 @@ async def auto_brands(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🏆 Нові ТМ — {now.strftime('%B %Y')}\n\n{get_agent1_response()}")
 
 
+# ============================================================
+# АГЕНТ №4 — КОНТЕНТ + SMM (Instagram AVANTI)
+# ============================================================
+
+# 15 топових позицій з цінами
+INSTAGRAM_POSTS = [
+    {"brand": "Deeply", "name": "Шампунь нормалізуючий", "vol": "250мл", "salon": 158, "partner": 141, "rrc": 280, "no_price": True},
+    {"brand": "Deeply", "name": "Маска відновлююча", "vol": "300мл", "salon": 248, "partner": 220, "rrc": 440, "no_price": True},
+    {"brand": "Deeply", "name": "Кондиціонер розгладжуючий", "vol": "250мл", "salon": 208, "partner": 185, "rrc": 311, "no_price": True},
+    {"brand": "Deeply", "name": "Спрей термозахист 10в1", "vol": "200мл", "salon": 267, "partner": 238, "rrc": 420, "no_price": True},
+    {"brand": "RR Line", "name": "Маска Macadamia Star", "vol": "500мл", "salon": 283, "partner": 264, "rrc": 385, "no_price": False},
+    {"brand": "RR Line", "name": "Флюїд Macadamia Star", "vol": "100мл", "salon": 590, "partner": 551, "rrc": 802, "no_price": False},
+    {"brand": "MoroccanOil", "name": "Treatment олія", "vol": "50мл", "salon": 851, "partner": 795, "rrc": 1190, "no_price": False},
+    {"brand": "EMMEBI ITALIA", "name": "Nutry Care маска", "vol": "200мл", "salon": 523, "partner": 488, "rrc": 713, "no_price": False},
+    {"brand": "EMMEBI ITALIA", "name": "Gate 03 крем вирівнюючий", "vol": "200мл", "salon": 671, "partner": 627, "rrc": 917, "no_price": False},
+    {"brand": "ECHOSline", "name": "Vegan Balance шампунь", "vol": "300мл", "salon": 289, "partner": 270, "rrc": 449, "no_price": False},
+    {"brand": "ECHOSline", "name": "Vegan Hydrating маска", "vol": "300мл", "salon": 230, "partner": 214, "rrc": 357, "no_price": False},
+    {"brand": "Bbcos", "name": "Keratin фарба без аміаку", "vol": "100мл", "salon": 352, "partner": 328, "rrc": 553, "no_price": False},
+    {"brand": "C:EHKO", "name": "Лак фіксація Діамант (3)", "vol": "400мл", "salon": 410, "partner": 383, "rrc": 740, "no_price": True},
+    {"brand": "Dermaskill", "name": "Only One Cream 3в1", "vol": "50мл", "salon": 1378, "partner": 1286, "rrc": 1950, "no_price": False},
+    {"brand": "PNB", "name": "Гель-лак в асортименті", "vol": "8мл", "salon": 135, "partner": 109, "rrc": 196, "no_price": False},
+]
+
+AGENT4_SYSTEM = """Ти — AI Агент №4 AVANTI Cosmetics. Спеціаліст з контенту та SMM.
+Твоє завдання: генерувати тексти для Instagram постів в B2B сегменті.
+Цільова аудиторія: власники салонів, магазинів косметики, майстри манікюру та перукарі.
+Ціль акаунту: залучення нових B2B партнерів по Закарпаттю та Україні.
+Стиль: професійний, лаконічний, з акцентом на вигоду для бізнесу клієнта.
+Мова: українська.
+Завжди закінчуй: "📋 Прайс і умови → посилання в профілі | ✈️ @avanti_cosmetics_ua"
+Максимум 150 слів."""
+
+
+def get_agent4_post(post_idx: int) -> str:
+    """Генерує текст Instagram поста для позиції по індексу."""
+    post = INSTAGRAM_POSTS[post_idx % len(INSTAGRAM_POSTS)]
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+    if post["no_price"]:
+        price_info = "Ціни — за запитом (надаємо прайс)"
+        price_block = ""
+    else:
+        price_info = f"Ціна салону: {post['salon']} ₴ | Ціна партнера: {post['partner']} ₴ | РРЦ: {post['rrc']} ₴"
+        price_block = f"\n💅 Салон: {post['salon']} ₴\n🏪 Партнер: {post['partner']} ₴"
+
+    prompt = f"""Напиши текст для Instagram поста про продукт:
+Бренд: {post['brand']}
+Продукт: {post['name']} {post['vol']}
+{price_info}
+
+Структура:
+1. Емоційний заголовок 1 рядок
+2. Опис продукту та його переваг для бізнесу (2-3 речення)
+3. Для кого підходить (салон/майстер/магазин)
+{price_block}
+4. Заклик до дії + хештеги (5-7 хештегів)"""
+
+    try:
+        r = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=400,
+            system=AGENT4_SYSTEM,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return r.content[0].text
+    except Exception as e:
+        return f"❌ Помилка генерації: {e}"
+
+
+def get_agent4_strategy() -> str:
+    """Генерує стратегічний контент-план на тиждень."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    now = kyiv_time()
+    try:
+        r = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=500,
+            system=AGENT4_SYSTEM,
+            messages=[{"role": "user", "content": f"""Контент-план для Instagram @avanti__cosmetics на тиждень ({now.strftime('%d.%m.%Y')}).
+Ціль: залучення B2B клієнтів (салони, магазини, майстри) по Закарпаттю.
+Готуємось до таргетованої реклами після 10 червня.
+Запропонуй 3 пости на тиждень: ПН, СР, ПТ.
+Для кожного: тема, тип контенту, короткий опис."""}]
+        )
+        return r.content[0].text
+    except Exception as e:
+        return f"❌ Помилка: {e}"
+
+
+# Лічильник постів (зберігається між запусками через БД)
+def get_post_counter() -> int:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS agent4_state (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("SELECT value FROM agent4_state WHERE key='post_counter'")
+    row = c.fetchone()
+    conn.close()
+    return int(row[0]) if row else 0
+
+
+def increment_post_counter():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS agent4_state (key TEXT PRIMARY KEY, value TEXT)")
+    counter = get_post_counter() + 1
+    c.execute("INSERT OR REPLACE INTO agent4_state (key, value) VALUES ('post_counter', ?)", (str(counter),))
+    conn.commit()
+    conn.close()
+    return counter
+
+
+async def auto_agent4_post(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматична генерація тексту поста ПН/СР/ПТ о 9:00 Київ."""
+    now = kyiv_time()
+    counter = get_post_counter()
+    post = INSTAGRAM_POSTS[counter % len(INSTAGRAM_POSTS)]
+    post_text = get_agent4_post(counter)
+    increment_post_counter()
+
+    msg = f"""✨ Агент №4 — Контент Instagram
+📅 {now.strftime('%d.%m.%Y')} | Пост #{counter + 1}/15
+
+🏷️ {post['brand']} — {post['name']} {post['vol']}
+
+━━━━━━━━━━━━━━━━━━━━
+{post_text}
+━━━━━━━━━━━━━━━━━━━━
+
+📸 Додай фото продукту і публікуй в @avanti__cosmetics"""
+
+    await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=msg)
+
+
+async def auto_agent4_weekly(context: ContextTypes.DEFAULT_TYPE):
+    """Щотижневий контент-план у неділю о 20:00 Київ."""
+    now = kyiv_time()
+    plan = get_agent4_strategy()
+    await context.bot.send_message(
+        chat_id=OWNER_CHAT_ID,
+        text=f"📊 Агент №4 — Контент-план на тиждень\n📅 {now.strftime('%d.%m.%Y')}\n\n{plan}"
+    )
+
+
+async def cmd_agent4(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /agent4 — генерує наступний пост вручну."""
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    await update.message.reply_text("✨ Агент №4 генерує пост... зачекай")
+    counter = get_post_counter()
+    post = INSTAGRAM_POSTS[counter % len(INSTAGRAM_POSTS)]
+    post_text = get_agent4_post(counter)
+    increment_post_counter()
+    now = kyiv_time()
+
+    msg = f"""✨ Агент №4 — Instagram пост #{counter + 1}/15
+📅 {now.strftime('%d.%m.%Y')}
+
+🏷️ {post['brand']} — {post['name']} {post['vol']}
+
+━━━━━━━━━━━━━━━━━━━━
+{post_text}
+━━━━━━━━━━━━━━━━━━━━
+
+📸 Додай фото і публікуй в @avanti__cosmetics
+📋 Залишилось постів: {15 - (counter + 1) % 15}"""
+
+    await update.message.reply_text(msg)
+
+
 def main():
     if not ANTHROPIC_KEY:
         print("ПОМИЛКА: ANTHROPIC_API_KEY")
@@ -513,16 +662,22 @@ def main():
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("agent1", cmd_agent1))
+    app.add_handler(CommandHandler("agent4", cmd_agent4))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     jq = app.job_queue
+    # Існуючі задачі
     jq.run_daily(auto_digest, time=datetime.strptime("05:30", "%H:%M").time())
     jq.run_daily(auto_sport,  time=datetime.strptime("09:00", "%H:%M").time())
-    jq.run_daily(auto_food,   time=datetime.strptime("10:00", "%H:%M").time())
+    jq.run_daily(auto_food,   time=datetime.strptime("09:45", "%H:%M").time())
     jq.run_daily(auto_trends, time=datetime.strptime("06:00", "%H:%M").time(), days=(1,))
     jq.run_monthly(auto_brands, when=datetime.strptime("06:00", "%H:%M").time(), day=1)
+    # Агент №4 — Instagram пости ПН/СР/ПТ о 9:00 Київ (6:00 UTC)
+    jq.run_daily(auto_agent4_post, time=datetime.strptime("06:00", "%H:%M").time(), days=(1, 3, 5))
+    # Контент-план щонеділі о 20:00 Київ (17:00 UTC)
+    jq.run_daily(auto_agent4_weekly, time=datetime.strptime("17:00", "%H:%M").time(), days=(0,))
 
     print("🚀 AVANTI Supervisor запущений!")
     print("📊 БД: нагадування і задачі зберігаються постійно")
