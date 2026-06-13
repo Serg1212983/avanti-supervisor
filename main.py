@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 import anthropic
 
-TELEGRAM_TOKEN = "8608440555:AAGBRdr8IA2iB9sLCEJFnPDBtRMeSlfkFLU"
+TELEGRAM_TOKEN = "8608440555:AAETaYUW8yVd8AqAASr1TqERBKSY1j-L6-k"
 OWNER_CHAT_ID = 6854020655
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
