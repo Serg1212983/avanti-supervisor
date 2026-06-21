@@ -10,21 +10,22 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 import anthropic
 
-TELEGRAM_TOKEN = "8608440555:AAETaYUW8yVd8AqAASr1TqERBKSY1j-L6-k"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 OWNER_CHAT_ID = 6854020655
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
 DB_PATH = "/app/avanti.db"
 
 SYSTEM_PROMPT = """Ти — AI Супервайзер і особистий асистент Сергія. Власник бізнесу AVANTI Cosmetics.
 Відповідай українською мовою. Коротко і по суті.
 
-БІЗНЕС: Дистрибуція косметики, Закарпаття, ФОП Сергій
+БІЗНЕС: Дистрибуція косметики, ФОП Сергій
 ОБОРОТ: 1 млн+ грн/місяць. МАРЖА: 18.6% ціль 30%.
 БОРГ: 400 000 грн до грудня 2026.
 ОБОРОТНІ КОШТИ: 100-120 000 грн
 
-КЛІЄНТИ (22, Закарпаття):
+КЛІЄНТИ (22):
 Немеш, ФОП Петрище, Рущак, Лендел, Білак, Костак, Козушко,
 Цибарь, Крьока, Папарига, Гоєр, Думен, Морозько, Сятиня,
 Сабов, Кричфалушій, Прислупська, Худенко, Іжакевич,
@@ -38,19 +39,119 @@ SYSTEM_PROMPT = """Ти — AI Супервайзер і особистий ас
 C:EHKO, Daeng Gi Meo Ri, Deeply, GK Hair, Mielle, Meloni,
 MoroccanOil, Palco, RR Line, Hedonic, Robeauty, Dermaskill
 Обличчя: Bourjois, Lumene, Max Factor
-Кандидати: Hypertine Beauty Surf
 
-СТРАТЕГІЯ: Ціль 1.5 млн → 2 млн грн/місяць. Червень 2026 Wize Wase B2C.
-РОЗПОРЯДОК: 12:00 спорт, 12:45 їжа. Сергій не виходить з дому.
+СТРАТЕГІЯ: Ціль 1.5 млн → 2 млн грн/місяць.
 
 ВАЖЛИВО ПРО НАГАДУВАННЯ:
 Якщо Сергій каже "нагадай", "нагадати", "нагади" з часом — система автоматично збереже нагадування.
 ЗАВЖДИ відповідай: "✅ Записав нагадування: [задача] о [час]"
-НІКОЛИ не кажи що не можеш надіслати нагадування — система це робить автоматично."""
+НІКОЛИ не кажи що не можеш надіслати нагадування — система це робить автоматично.
+
+ВЕБ-ПОШУК:
+Якщо питання стосується актуальних новин, нових брендів, цін конкурентів, трендів ринку — 
+використовуй веб-пошук для отримання актуальної інформації."""
 
 conversation_history = []
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# TAVILY ВЕБ-ПОШУК
+# ============================================================
+
+def tavily_search(query: str, max_results: int = 5) -> str:
+    """Пошук актуальної інформації через Tavily API."""
+    if not TAVILY_KEY:
+        return "❌ Tavily API ключ не налаштований"
+    
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_KEY,
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": max_results,
+                "include_answer": True,
+                "include_raw_content": False,
+            },
+            timeout=15
+        )
+        data = response.json()
+        
+        if "error" in data:
+            return f"❌ Помилка пошуку: {data['error']}"
+        
+        results = []
+        
+        # Додаємо загальну відповідь якщо є
+        if data.get("answer"):
+            results.append(f"📌 Відповідь: {data['answer']}\n")
+        
+        # Додаємо результати
+        for i, r in enumerate(data.get("results", [])[:max_results], 1):
+            title = r.get("title", "")
+            content = r.get("content", "")[:300]
+            url = r.get("url", "")
+            results.append(f"{i}. {title}\n{content}\n🔗 {url}\n")
+        
+        return "\n".join(results) if results else "Нічого не знайдено"
+        
+    except Exception as e:
+        logger.error(f"Tavily error: {e}")
+        return f"❌ Помилка пошуку: {str(e)}"
+
+
+def needs_web_search(text: str) -> bool:
+    """Визначає чи потрібен веб-пошук для відповіді."""
+    keywords = [
+        "тренд", "новин", "зараз", "актуальн", "сьогодні", "2025", "2026",
+        "нов", "бренд", "конкурент", "ціна", "ринок", "популярн",
+        "знайди", "пошукай", "перевір", "дізнайся", "що відбувається",
+        "косметика", "instagram", "tiktok", "огляд", "відгук",
+        "новинка", "реліз", "запуск", "аналіз ринку", "постачальник"
+    ]
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in keywords)
+
+
+def get_claude_response_with_search(user_message: str) -> str:
+    """Отримує відповідь Claude з веб-пошуком якщо потрібно."""
+    global conversation_history
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    now = kyiv_time()
+    
+    # Перевіряємо чи потрібен веб-пошук
+    search_context = ""
+    if needs_web_search(user_message) and TAVILY_KEY:
+        logger.info(f"Web search triggered for: {user_message[:50]}")
+        search_results = tavily_search(user_message)
+        if search_results and "❌" not in search_results:
+            search_context = f"\n\n🌐 АКТУАЛЬНА ІНФОРМАЦІЯ З ІНТЕРНЕТУ:\n{search_results}\n\nВикористай цю інформацію у відповіді."
+    
+    full_message = f"[Київ {now.strftime('%H:%M %d.%m.%Y')}] {user_message}{search_context}"
+    
+    conversation_history.append({
+        "role": "user",
+        "content": full_message
+    })
+    
+    if len(conversation_history) > 30:
+        conversation_history = conversation_history[-30:]
+    
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            system=SYSTEM_PROMPT,
+            messages=conversation_history
+        )
+        reply = response.content[0].text
+        conversation_history.append({"role": "assistant", "content": reply})
+        return reply
+    except Exception as e:
+        return f"Помилка: {str(e)}"
 
 
 def kyiv_time():
@@ -150,27 +251,8 @@ def parse_time(text):
 
 
 def get_claude_response(user_message):
-    global conversation_history
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    now = kyiv_time()
-    conversation_history.append({
-        "role": "user",
-        "content": f"[Київ {now.strftime('%H:%M %d.%m.%Y')}] {user_message}"
-    })
-    if len(conversation_history) > 30:
-        conversation_history = conversation_history[-30:]
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            system=SYSTEM_PROMPT,
-            messages=conversation_history
-        )
-        reply = response.content[0].text
-        conversation_history.append({"role": "assistant", "content": reply})
-        return reply
-    except Exception as e:
-        return f"Помилка: {str(e)}"
+    """Стара функція для сумісності — без веб-пошуку."""
+    return get_claude_response_with_search(user_message)
 
 
 def transcribe_voice(file_path):
@@ -190,12 +272,25 @@ def transcribe_voice(file_path):
 
 
 def get_agent1_response():
+    """Агент №1 — аналіз ринку З веб-пошуком."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    
+    # Пошук актуальних трендів
+    search_results = ""
+    if TAVILY_KEY:
+        search_results = tavily_search(
+            "косметика тренди Україна 2026 нові бренди дистрибуція", 
+            max_results=5
+        )
+    
+    search_context = f"\n\nАКТУАЛЬНА ІНФОРМАЦІЯ З ІНТЕРНЕТУ:\n{search_results}" if search_results else ""
+    
     try:
         r = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1200,
-            messages=[{"role": "user", "content": """Ти аналітик косметичного ринку України.
+            messages=[{"role": "user", "content": f"""Ти аналітик косметичного ринку України.
+{search_context}
 
 🔥 ТРЕНДИ ТИЖНЯ (3 пункти) — що популярно в косметиці UA+світ.
 
@@ -204,6 +299,7 @@ PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:E
 Критерії: середній+ сегмент, ексклюзивний імпортер в Україні, маржа 30%+.
 
 💡 РЕКОМЕНДАЦІЯ для 1.5 млн грн/міс.
+Використай актуальну інформацію з інтернету якщо вона надана.
 Українською."""}]
         )
         return r.content[0].text
@@ -212,7 +308,6 @@ PNB, Siller, Adore, ECHOSline, EMMEBI ITALIA, MAIS, Apriori, AG Skin, Bbcos, C:E
 
 
 def process_reminder(text):
-    """Перевіряє чи є в тексті нагадування і зберігає в БД"""
     kws = ["нагадай", "нагадати", "нагади", "нагадування"]
     if not any(k in text.lower() for k in kws):
         return False, None, None
@@ -235,7 +330,6 @@ def process_reminder(text):
 
 
 def reminder_checker():
-    """Перевіряє нагадування кожну хвилину"""
     while True:
         try:
             now = kyiv_time()
@@ -253,30 +347,30 @@ def reminder_checker():
                         },
                         timeout=10
                     )
-                    logger.info(f"Reminder sent: {rtext} at {rtime}")
         except Exception as e:
             logger.error(f"Reminder checker: {e}")
         time.sleep(60)
 
 
 async def process_text(text, update, context):
-    """Обробляє текст — і голосовий і текстовий"""
-    # Перевіряємо нагадування
     is_reminder, rt, label = process_reminder(text)
     if is_reminder:
         await update.message.reply_text(f"✅ Нагадування записано!\n⏰ {label} о {rt}\n📝 {text}")
         return
 
-    # Перевіряємо задачі
     task_kws = ["задача:", "завдання:", "зробити:", "todo:"]
     if any(k in text.lower() for k in task_kws):
         db_add_task(text)
         await update.message.reply_text(f"✅ Задачу записано:\n📋 {text}")
         return
 
-    # Звичайна відповідь
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    response = get_claude_response(text)
+    
+    # Показуємо що шукаємо в інтернеті якщо потрібно
+    if needs_web_search(text) and TAVILY_KEY:
+        await update.message.reply_text("🌐 Шукаю актуальну інформацію...")
+    
+    response = get_claude_response_with_search(text)
     await update.message.reply_text(response)
 
 
@@ -315,21 +409,37 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     now = kyiv_time()
+    web_status = "✅ Веб-пошук активний" if TAVILY_KEY else "❌ Веб-пошук не підключений"
     await update.message.reply_text(
         f"AVANTI Supervisor 🚀\n"
-        f"Зараз: {now.strftime('%H:%M %d.%m.%Y')} Київ\n\n"
+        f"Зараз: {now.strftime('%H:%M %d.%m.%Y')} Київ\n"
+        f"{web_status}\n\n"
         f"🎤 Говори голосом!\n"
-        f"🔔 'Нагадай о 15:00 зателефонувати' — збережу і нагадаю точно\n"
-        f"📋 'Задача: зробити щось' — запишу в список\n\n"
-        f"Авто щодня:\n"
-        f"• 8:30 — ранковий дайджест\n"
-        f"• 12:00 — нагадування спорт\n"
-        f"• 12:45 — нагадування їжа\n\n"
-        f"Авто тижневе:\n"
-        f"• Пн 9:00 — тренди косметики\n"
-        f"• 1-го числа — нові ТМ кандидати\n\n"
-        f"Команди: /status /digest /plan /reminders /tasks /agent1"
+        f"🌐 Питай про тренди — знайду в інтернеті!\n"
+        f"🔔 'Нагадай о 15:00 зателефонувати' — збережу\n"
+        f"📋 'Задача: зробити щось' — запишу\n\n"
+        f"Команди: /status /digest /plan /reminders /tasks /agent1 /search /agent4"
     )
+
+
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /search — прямий веб-пошук."""
+    if update.effective_user.id != OWNER_CHAT_ID:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Використання: /search [запит]\nНаприклад: /search тренди манікюр 2026")
+        return
+    
+    query = " ".join(args)
+    await update.message.reply_text(f"🌐 Шукаю: {query}...")
+    
+    if not TAVILY_KEY:
+        await update.message.reply_text("❌ Tavily API ключ не налаштований. Додай TAVILY_API_KEY в Railway Variables.")
+        return
+    
+    results = tavily_search(query, max_results=5)
+    await update.message.reply_text(f"🔍 Результати пошуку:\n\n{results}")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -425,7 +535,7 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_agent1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
         return
-    await update.message.reply_text("🔍 Аналізую... зачекай 60 секунд")
+    await update.message.reply_text("🔍 Аналізую ринок в реальному часі... зачекай 60 секунд")
     now = kyiv_time()
     await update.message.reply_text(f"🤖 Агент №1 — {now.strftime('%d.%m.%Y')}\n\n{get_agent1_response()}")
 
@@ -456,11 +566,18 @@ async def auto_food(context: ContextTypes.DEFAULT_TYPE):
 
 async def auto_trends(context: ContextTypes.DEFAULT_TYPE):
     now = kyiv_time()
+    
+    # Пошук актуальних трендів в інтернеті
+    search_results = ""
+    if TAVILY_KEY:
+        search_results = tavily_search("тренди косметика манікюр волосся Україна 2026", max_results=3)
+    
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     try:
+        search_context = f"\nАКТУАЛЬНА ІНФОРМАЦІЯ:\n{search_results}" if search_results else ""
         r = client.messages.create(
             model="claude-sonnet-4-6", max_tokens=700,
-            messages=[{"role": "user", "content": "Топ-3 тренди в косметиці України зараз (манікюр/волосся/обличчя). Для кожного: назва, звідки, чому важливо дистриб'ютору. Українською, коротко."}]
+            messages=[{"role": "user", "content": f"Топ-3 тренди в косметиці України зараз (манікюр/волосся/обличчя). Для кожного: назва, звідки, чому важливо дистриб'ютору. Українською, коротко.{search_context}"}]
         )
         await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=f"🔍 Тренди — {now.strftime('%d.%m')}\n\n{r.content[0].text}")
     except Exception as e:
@@ -473,10 +590,9 @@ async def auto_brands(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# АГЕНТ №4 — КОНТЕНТ + SMM (Instagram AVANTI)
+# АГЕНТ №4 — КОНТЕНТ + SMM
 # ============================================================
 
-# 15 топових позицій з цінами
 INSTAGRAM_POSTS = [
     {"brand": "Deeply", "name": "Шампунь нормалізуючий", "vol": "250мл", "salon": 158, "partner": 141, "rrc": 280, "no_price": True},
     {"brand": "Deeply", "name": "Маска відновлююча", "vol": "300мл", "salon": 248, "partner": 220, "rrc": 440, "no_price": True},
@@ -498,15 +614,14 @@ INSTAGRAM_POSTS = [
 AGENT4_SYSTEM = """Ти — AI Агент №4 AVANTI Cosmetics. Спеціаліст з контенту та SMM.
 Твоє завдання: генерувати тексти для Instagram постів в B2B сегменті.
 Цільова аудиторія: власники салонів, магазинів косметики, майстри манікюру та перукарі.
-Ціль акаунту: залучення нових B2B партнерів по Закарпаттю та Україні.
+Ціль акаунту: залучення нових B2B партнерів по Україні.
 Стиль: професійний, лаконічний, з акцентом на вигоду для бізнесу клієнта.
 Мова: українська.
-Завжди закінчуй: "📋 Прайс і умови → посилання в профілі | ✈️ @avanti_cosmetics_ua"
+Завжди закінчуй: "📋 Прайс і умови → посилання в профілі | ✈️ @avanti__cosmetics"
 Максимум 150 слів."""
 
 
 def get_agent4_post(post_idx: int) -> str:
-    """Генерує текст Instagram поста для позиції по індексу."""
     post = INSTAGRAM_POSTS[post_idx % len(INSTAGRAM_POSTS)]
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
@@ -541,7 +656,6 @@ def get_agent4_post(post_idx: int) -> str:
 
 
 def get_agent4_strategy() -> str:
-    """Генерує стратегічний контент-план на тиждень."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     now = kyiv_time()
     try:
@@ -549,8 +663,7 @@ def get_agent4_strategy() -> str:
             model="claude-sonnet-4-6", max_tokens=500,
             system=AGENT4_SYSTEM,
             messages=[{"role": "user", "content": f"""Контент-план для Instagram @avanti__cosmetics на тиждень ({now.strftime('%d.%m.%Y')}).
-Ціль: залучення B2B клієнтів (салони, магазини, майстри) по Закарпаттю.
-Готуємось до таргетованої реклами після 10 червня.
+Ціль: залучення B2B клієнтів (салони, магазини, майстри) по Україні.
 Запропонуй 3 пости на тиждень: ПН, СР, ПТ.
 Для кожного: тема, тип контенту, короткий опис."""}]
         )
@@ -559,7 +672,6 @@ def get_agent4_strategy() -> str:
         return f"❌ Помилка: {e}"
 
 
-# Лічильник постів (зберігається між запусками через БД)
 def get_post_counter() -> int:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -582,7 +694,6 @@ def increment_post_counter():
 
 
 async def auto_agent4_post(context: ContextTypes.DEFAULT_TYPE):
-    """Автоматична генерація тексту поста ПН/СР/ПТ о 9:00 Київ."""
     now = kyiv_time()
     counter = get_post_counter()
     post = INSTAGRAM_POSTS[counter % len(INSTAGRAM_POSTS)]
@@ -604,7 +715,6 @@ async def auto_agent4_post(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def auto_agent4_weekly(context: ContextTypes.DEFAULT_TYPE):
-    """Щотижневий контент-план у неділю о 20:00 Київ."""
     now = kyiv_time()
     plan = get_agent4_strategy()
     await context.bot.send_message(
@@ -614,7 +724,6 @@ async def auto_agent4_weekly(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_agent4(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /agent4 — генерує наступний пост вручну."""
     if update.effective_user.id != OWNER_CHAT_ID:
         return
     await update.message.reply_text("✨ Агент №4 генерує пост... зачекай")
@@ -646,10 +755,15 @@ def main():
 
     init_db()
     print("✅ База даних ініціалізована")
+    
+    if TAVILY_KEY:
+        print("✅ Tavily веб-пошук активний")
+    else:
+        print("⚠️ Tavily не підключений — додай TAVILY_API_KEY в Railway Variables")
 
     t = threading.Thread(target=reminder_checker, daemon=True)
     t.start()
-    print("✅ Нагадування активні (перевірка щохвилини)")
+    print("✅ Нагадування активні")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -663,24 +777,21 @@ def main():
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("agent1", cmd_agent1))
     app.add_handler(CommandHandler("agent4", cmd_agent4))
+    app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     jq = app.job_queue
-    # Існуючі задачі
     jq.run_daily(auto_digest, time=datetime.strptime("05:30", "%H:%M").time())
     jq.run_daily(auto_sport,  time=datetime.strptime("09:00", "%H:%M").time())
     jq.run_daily(auto_food,   time=datetime.strptime("09:45", "%H:%M").time())
     jq.run_daily(auto_trends, time=datetime.strptime("06:00", "%H:%M").time(), days=(1,))
     jq.run_monthly(auto_brands, when=datetime.strptime("06:00", "%H:%M").time(), day=1)
-    # Агент №4 — Instagram пости ПН/СР/ПТ о 9:00 Київ (6:00 UTC)
     jq.run_daily(auto_agent4_post, time=datetime.strptime("06:00", "%H:%M").time(), days=(1, 3, 5))
-    # Контент-план щонеділі о 20:00 Київ (17:00 UTC)
     jq.run_daily(auto_agent4_weekly, time=datetime.strptime("17:00", "%H:%M").time(), days=(0,))
 
-    print("🚀 AVANTI Supervisor запущений!")
-    print("📊 БД: нагадування і задачі зберігаються постійно")
+    print("🚀 AVANTI Supervisor запущений з веб-пошуком!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
