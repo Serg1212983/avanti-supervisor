@@ -301,16 +301,16 @@ def get_agent1_response() -> str:
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     now = kyiv_time()
 
-    # 8 паралельних цільових пошуків
+    # 8 паралельних цільових пошуків + Instagram
     search_queries = [
         "тренди професійна косметика волосся Україна 2026 салони",
         "тренди манікюр гель-лак нігті Україна 2026 популярні бренди",
         "тренди догляд обличчя Україна 2026 нові продукти салон",
-        "нові бренди професійна косметика імпорт Україна 2026 дистрибуція",
+        "нові бренди професійна косметика імпорт Україна 2026 дистрибуція ексклюзив",
         "конкуренти дистриб'ютори косметика Україна оптові постачальники 2026",
-        "professional hair care trends Italy France Korea 2026 new brands",
-        "nail art trends world top professional brands 2026",
-        "luxury professional cosmetics new brands Europe exclusive distributor 2026"
+        "professional hair care trends Italy France Korea 2026 new brands distributor",
+        "nail art trends world top professional brands 2026 exclusive",
+        "site:instagram.com professional cosmetics Ukraine new brand 2026 дистриб'ютор"
     ]
 
     labels = [
@@ -321,7 +321,7 @@ def get_agent1_response() -> str:
         "🏆 КОНКУРЕНТИ УКРАЇНА",
         "🌍 СВІТОВІ ТРЕНДИ ВОЛОССЯ (Італія/Франція/Корея)",
         "🌍 СВІТОВІ ТРЕНДИ МАНІКЮР",
-        "💎 ПРЕМІУМ БРЕНДИ ЄВРОПА"
+        "📱 INSTAGRAM — НОВІ БРЕНДИ"
     ]
 
     logger.info("Агент №1: запускаю 8 паралельних пошуків...")
@@ -693,7 +693,9 @@ async def auto_trends(context: ContextTypes.DEFAULT_TYPE):
     
     queries = [
         "тренди косметика манікюр волосся Україна 2026",
-        "viral beauty trends TikTok Instagram 2026"
+        "viral beauty trends TikTok Instagram 2026",
+        "site:instagram.com новий бренд косметика професійна Україна дистриб'ютор 2026",
+        "site:instagram.com new professional cosmetics brand Ukraine exclusive 2026"
     ]
     results = tavily_multi_search(queries)
     combined = "\n\n".join([f"{q}:\n{r[:500]}" for q, r in results.items()])
@@ -701,13 +703,26 @@ async def auto_trends(context: ContextTypes.DEFAULT_TYPE):
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     try:
         r = client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=800,
-            messages=[{"role": "user", "content": f"""Топ-5 трендів в косметиці України зараз (манікюр/волосся/обличчя).
-ДАНІ З ІНТЕРНЕТУ:
+            model="claude-sonnet-4-6", max_tokens=1200,
+            messages=[{"role": "user", "content": f"""Ти аналітик косметичного ринку України.
+ДАНІ З ІНТЕРНЕТУ ТА INSTAGRAM:
 {combined}
 
-Для кожного тренду: назва → звідки прийшов → чому важливо дистриб'ютору → конкретна дія.
-Українською, конкретно."""}]
+Зроби звіт у двох частинах:
+
+📊 ТРЕНДИ ТИЖНЯ (топ-5)
+Що зараз популярно в косметиці України — волосся, манікюр, обличчя.
+Для кожного: назва тренду → звідки прийшов → що це означає для дистриб'ютора.
+
+📱 INSTAGRAM — НОВІ БРЕНДИ (якщо знайдено)
+Нові бренди які з'явились в Instagram і підходять під критерії:
+— Середній+ або преміум сегмент
+— Є ексклюзивний імпортер або оптова модель (як Deeply)
+— Маржа 25%+
+— НЕ корейський масмаркет з десятками постачальників
+Для кожного: назва → країна → категорія → Instagram акаунт → чому цікаво.
+
+Українською. Конкретно. Без води."""}]
         )
         await context.bot.send_message(
             chat_id=OWNER_CHAT_ID,
